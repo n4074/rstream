@@ -7,3 +7,12 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tokio-tungstenite = "*"
+log = "*"
+env_logger = "*"
+clap = "3.0.0-beta.2"
+anyhow = "*"
+thiserror = "*"
+
+tokio = { version = "0.3", default-features = false, features = ["io-std", "macros", "rt-multi-thread", "stream", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
