@@ -8,11 +8,16 @@ edition = "2018"
 
 [dependencies]
 tokio-tungstenite = "*"
+tungstenite = "*"
 log = "*"
 env_logger = "*"
 clap = "3.0.0-beta.2"
 anyhow = "*"
 thiserror = "*"
+bytes = "*"
+serde = "*"
+serde_json = "*"
 
-tokio = { version = "0.3", default-features = false, features = ["io-std", "macros", "rt-multi-thread", "stream", "time"] }
+uuid = { version = "*", features = ["serde", "v4"] }
+tokio = { version = "0.3", default-features = false, features = ["full"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
