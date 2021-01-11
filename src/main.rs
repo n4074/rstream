@@ -16,15 +16,40 @@ use tokio_tungstenite::{WebSocketStream};
 use uuid::Uuid;
 use std::collections::{HashMap, hash_map::Keys};
 use std::sync::{Arc, Mutex};
+use anyhow::{Result,Context};
 
 use serde::{Deserialize, Serialize};
 //use serde_json::Result;
 
 
-type Participants = Arc<Mutex<HashMap<Uuid, Sender<String>>>>;
+type PeerMap = Arc<Mutex<HashMap<Uuid, Sender<PeerMsg>>>>;
+
+#[derive(Serialize, Deserialize)]
+#[derive(Debug)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum Action {
+    List,
+    Offer { sdp: String },    
+    Answer { sdp: String },    
+    NewIceCandidate { candidate: String }
+}
+
+#[derive(Serialize, Deserialize)]
+#[derive(Debug)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+struct Msg {
+    action: Action,
+    recipient: Option<Uuid>
+}
+
+#[derive(Debug)]
+struct PeerMsg {
+    action: Action,
+    sender: Uuid
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> anyhow::Result<()> {
     let _ = env_logger::try_init();
 
     let matches = App::new(crate_name!())
@@ -44,40 +69,25 @@ async fn main() -> Result<(), Error> {
     let listener = try_socket.expect("Failed to bind");
     info!("Listening on: {}", addr);
 
-    let cams: Participants = Arc::new(Mutex::new(HashMap::new()));
-    //let (b_tx, b_rx) = broadcast::channel(16);
+    let peers: PeerMap = Arc::new(Mutex::new(HashMap::new()));
     
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(client_handler(stream, cams.clone()));
+        tokio::spawn(client_handler(stream, peers.clone()));
     }
 
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-enum Msg {
-    List,
-    Register { id: String },
-    Offer { sdp: String, recipient: Uuid },    
-    Answer { sdp: String, recipient: Uuid },    
-    NewIceCandidate { candidate: String, recipient: Uuid }
-}
-
-
-
-
-
-async fn client_handler(stream: TcpStream, cams: Participants) {
+async fn client_handler(stream: TcpStream, peers: PeerMap) {
     let addr = stream.peer_addr()
         .expect("connected streams should have a peer address");
 
     info!("Peer address: {}", addr);
 
     let id = Uuid::new_v4();
-    let (cam_tx, mut cam_rx) = mpsc::channel(16);
+    let (peer_tx, mut peer_rx) = mpsc::channel(16);
 
-    cams.lock().unwrap().insert(id, cam_tx);
+    peers.lock().unwrap().insert(id, peer_tx);
 
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
@@ -86,68 +96,41 @@ async fn client_handler(stream: TcpStream, cams: Participants) {
     info!("New WebSocket connection: {}", addr);
 
     let (mut outbound, mut inbound) = ws_stream.split();
-    let mut peermap = StreamMap::new();
-
     loop {
         tokio::select! {
             Some(msg) = inbound.next() => {
                 println!("Client msg");
                 let msg = msg.unwrap();
                 if msg.is_text() {
-                    handle_client(msg.to_text().unwrap(), &mut outbound, &mut peermap, &cams).await;
+                    handle_client(id, msg.to_text().unwrap(), &mut outbound, &peers).await;
                 };
             }
-            Some(msg) = cam_rx.recv() => {
-                println!("Registration msg");
+            Some(msg) = peer_rx.recv() => {
+                println!("New Peer msg");
+                // insert receive into peer map
                 //handle_peer(msg, cam_tx);
             }
-            Some((key, msg)) = peermap.next() => {
-                println!("Peer msg: {}", msg);
-            }
-
         }
     }
 }
 
-//async fn handle_peer(msg: String, cam_tx: Sender<) {
-//    
-//}
-
-async fn handle_client(msg: &str, outbound: &mut (impl SinkExt<Message> + Unpin), peers: &mut StreamMap<Uuid,Receiver<String>>, cams: &Participants) {
+async fn handle_client(id: Uuid, msg: &str, outbound: &mut (impl SinkExt<Message> + Unpin), peers: &PeerMap) -> anyhow::Result<()> {
     let msg: Msg = serde_json::from_str(msg).unwrap();
-    match msg {
-        Msg::List => {
-            let cams_: HashMap<Uuid,Sender<String>>;
-            {
-                let cams = cams.lock().unwrap();
-                cams_ = cams.clone();
-            }
-            let ids = cams_.keys().collect::<Vec<&Uuid>>();
+    let peers = peers.lock().unwrap().clone();
+    Ok(match msg {
+        Msg { action: Action::List, .. } => {
+            //let peers = peers.lock().unwrap().clone();
+            let ids = peers.keys().collect::<Vec<&Uuid>>();
             let json = serde_json::to_string(&ids).unwrap();
-            outbound.send(Text(json.to_owned())).await;
+            outbound.send(Text(json.to_owned())).await?
 
-        },
-        Msg::Register { id } => {
-            let cams_: HashMap<Uuid,Sender<String>>;
-            {
-                let cams = cams.lock().unwrap();
-                cams_ = cams.clone();
-            }
-            for (key,cam) in cams_.iter() {
-                // send new channel 
-
-                cam.send(id.clone()).await;
-            }
         }
-        Msg::Offer { sdp, recipient } => {
-            println!("offer");
+        Msg { recipient: Some(recipient), action } => {
+            println!("Forwarding msg");
+            peers.get(&recipient).unwrap().send(PeerMsg { action: action, sender: id }).await?
         }
-        Msg::Answer { sdp, recipient } => {
-            println!("answer");
+        _ => {
+            ()
         }
-        Msg::NewIceCandidate { candidate, recipient } => {
-            println!("candidate");
-        }
-        _ => {}
-    }
+    })
 }
