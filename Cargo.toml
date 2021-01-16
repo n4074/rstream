@@ -5,10 +5,15 @@ authors = ["n4074 <n4074@users.noreply.github.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+    "frontend",
+    "common"
+]
 
 [dependencies]
-tokio-tungstenite = "*"
-tungstenite = "*"
+#tokio-tungstenite = "*"
+#tungstenite = "*"
 log = "*"
 env_logger = "*"
 clap = "3.0.0-beta.2"
@@ -19,5 +24,6 @@ serde = "*"
 serde_json = "*"
 
 uuid = { version = "*", features = ["serde", "v4"] }
-tokio = { version = "0.3", default-features = false, features = ["full"] }
+tokio = { version = "0.2.24", default-features = false, features = ["full"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
+warp = "*"
