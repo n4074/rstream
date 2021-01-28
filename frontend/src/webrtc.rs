@@ -26,6 +26,7 @@ pub struct WebRtcService {
     pc: RtcPeerConnection
 }
 
+#[derive(Debug)]
 pub struct WebRtcTask {
     peer_connection: RtcPeerConnection
 }

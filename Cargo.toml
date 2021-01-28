@@ -20,8 +20,10 @@ clap = "3.0.0-beta.2"
 anyhow = "*"
 thiserror = "*"
 bytes = "*"
-serde = "*"
+serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+
+common = { path = "common/" }
 
 uuid = { version = "*", features = ["serde", "v4"] }
 tokio = { version = "0.2.24", default-features = false, features = ["full"] }

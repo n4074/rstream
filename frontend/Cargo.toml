@@ -11,12 +11,17 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 yew = "0.17"
+yewtil = { version = "*", features = ["future"]}
 wasm-bindgen = "0.2.67"
+wasm-logger = "0.2"
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_error" ] }
+console_error_panic_hook = "*"
 anyhow = "*"
 js-sys = "*"
 thiserror = "*"
 wasm-bindgen-futures = "*"
 serde_json = "*"
+uuid = { version = "*", features = ["serde", "v4"] }
 
 common = { path = "../common" }
 
