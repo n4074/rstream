@@ -8,8 +8,11 @@ frontend: $(rg --files --type rust frontend)
 backend: $(rg --files --type rust --glob='!frontend')
 	cargo build
 
+keymaterial: localhost.key localhost.crt
+	step certificate create localhost localhost.crt localhost.key --profile self-signed  --subtle --insecure --no-password --kty=RSA --force
+
 run: frontend backend 
-	cargo run
+	RUST_LOG=rstream=debug cargo run
 
 clean:
 	rm src/static/*

@@ -22,6 +22,7 @@ thiserror = "*"
 wasm-bindgen-futures = "*"
 serde_json = "*"
 uuid = { version = "*", features = ["serde", "v4"] }
+futures = "*"
 
 common = { path = "../common" }
 
@@ -33,5 +34,10 @@ features = [
     "RtcPeerConnectionIceEvent",
     "RtcSdpType",
     "RtcSessionDescriptionInit",
-    "RtcIceCandidate"
+    "RtcIceCandidateInit",
+    "RtcIceCandidate",
+    "Window",
+    "Navigator",
+    "MediaDevices",
+    "MediaStreamConstraints",
 ]

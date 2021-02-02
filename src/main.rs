@@ -2,7 +2,7 @@ use std::{env, io::Error};
 
 use futures_util::{StreamExt,SinkExt, stream::SplitSink};
 use futures_util::sink::Sink;
-use log::info;
+use log::{info,debug};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::stream::{Stream, StreamMap};
 use tokio::sync::mpsc;
@@ -90,10 +90,16 @@ async fn main() {
         .or(warp::fs::dir("./src/static")) // TODO: embed resources in binary
     );
 
-    warp::serve(routes).run((addr, port)).await;
+    warp::serve(routes)
+        .tls()
+        .key_path("./localhost.key")
+        .cert_path("./localhost.crt")
+        .run((addr, port))
+        .await;
 }
 
 async fn client_handler(socket: warp::ws::WebSocket, peers: PeerMap) {
+    log::debug!("New socket connection: {:?}", socket);
     let (mut client_tx, mut client_rx) = socket.split();
 
     let id = Uuid::new_v4();
@@ -104,14 +110,14 @@ async fn client_handler(socket: warp::ws::WebSocket, peers: PeerMap) {
     loop {
         tokio::select! {
             Some(msg) = client_rx.next() => {
-                println!("Client msg");
+                log::debug!("ClientMsg: {:?}", msg);
                 let msg = msg.unwrap();
                 if msg.is_text() {
                     handle_client(id, msg.to_str().unwrap(), &mut client_tx, &peers).await;
                 };
             }
             Some(PeerMsg { signal, sender, .. }) = peer_rx.recv() => {
-                println!("New Peer msg");
+                log::debug!("PeerMsg: {:?} {:?}", signal, sender);
                 let msg = common::ClientMsg::Signal { signal, sender };
                 let msg = serde_json::to_string(&msg).unwrap();
                 client_tx.send(warp::filters::ws::Message::text(msg)).await;
@@ -136,7 +142,6 @@ async fn handle_client(sender: Uuid, msg: &str, client_tx: &mut futures_util::st
 
         }
         common::ServerMsg::Signal { recipient, signal } => {
-            println!("Forwarding msg");
             let peer_msg = PeerMsg { signal, recipient, sender };
             peers.get(&recipient).unwrap().clone().send(peer_msg).await
                 .context("Something")

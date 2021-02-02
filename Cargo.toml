@@ -28,4 +28,4 @@ common = { path = "common/" }
 uuid = { version = "*", features = ["serde", "v4"] }
 tokio = { version = "0.2.24", default-features = false, features = ["full"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
-warp = "*"
+warp = { version = "*", features = ["tls"] }

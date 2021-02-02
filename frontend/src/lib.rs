@@ -6,6 +6,12 @@ use yew::prelude::*;
 use yew::format::Json;
 use yew::services::websocket::{WebSocketService, WebSocketStatus, WebSocketTask};
 use yewtil::future::LinkFuture;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+
+//use futures::executor::block_on;
+use std::sync::{Arc, Mutex};
+type Connections = Arc<Mutex<HashMap<Uuid, WebRtcTask>>>;
 
 use web_sys::{window, Location, Url};
 
@@ -28,9 +34,11 @@ struct Model {
 	link: ComponentLink<Model>,
 	text: String,                    // text in our input box
 	server_data: String,             // data received from the server
-	peers: HashMap<Uuid, Option<String>>
+	peers: Vec<Uuid>,
+	connections: HashMap<Uuid, Arc<WebRtcTask>>
 }
 
+#[derive(Debug)]
 enum Action {
 	Connect,                         // connect to websocket server
 	Disconnected,                    // disconnected from server
@@ -57,7 +65,7 @@ impl From<ClientMsg> for Action {
 impl Model {
 
 	fn peer_view(&self) -> Html {
-		self.peers.iter().map(|(id, task)|  {
+		self.peers.iter().map(|id|  {
 			let id = id.clone();
 			html!{
 				<p><button onclick=self.link.callback(move |_| Action::ConnectPeer(id))>{ id.to_string() }</button></p>
@@ -76,7 +84,8 @@ impl Component for Model {
 			link: link,
 			text: String::new(),
 			server_data: String::new(),
-			peers: HashMap::new()
+			peers: Vec::new(),
+			connections: HashMap::new()
 		}
     }
 
@@ -85,6 +94,7 @@ impl Component for Model {
     }
 
 	fn update(&mut self, msg: Self::Message) -> ShouldRender {
+		log::debug!("Processing Msg: {:?}", msg);
 		match msg {
 			Action::Connect => {
 				log::debug!("Connecting");
@@ -116,14 +126,21 @@ impl Component for Model {
 			}
 
 			Action::ConnectPeer(id) => {
-				let peer = self.peers.entry(id); 
-				log::debug!("Connect Peer: {:?}", peer);
-				let task = WebRtcTask::new().unwrap();
-				log::debug!("{:?}", task);
+
+				let pc = self.connections.entry(id).or_insert_with(|| Arc::new(WebRtcTask::new().unwrap())).clone();
+
+				let onicecandidate_callback = self.link.callback(move |candidate| {
+					ServerMsg::Signal { signal: Signal::NewIceCandidate { candidate: candidate }, recipient: id }
+				});
+
+
 				self.link.send_future(async move {
-					let sdp = &task.get_offer().await;
+					pc.set_onicecandidate(onicecandidate_callback);
+					let sdp = &pc.get_offer().await;
+					log::debug!("Sending Signal::Offer: {:?}", sdp);
 					ServerMsg::Signal { signal: Signal::Offer { sdp: sdp.to_string() } , recipient: id }
 				});
+
 				false
 			}
 
@@ -132,6 +149,7 @@ impl Component for Model {
 				true
 			}
 			Action::Signal(signal) => {
+				log::debug!("Sending Signal: {:?}", signal);
 				match self.ws {
 					Some(ref mut task) => {
 						//let signal : common::ServerMsg = common::ServerMsg::ListPeers;
@@ -164,31 +182,64 @@ impl Component for Model {
                 match s {
                     common::ClientMsg::ListPeers { peers }  => {
 						log::debug!("Peers: {:?}", peers);
-						for peer in peers {
-							self.peers.entry(peer).or_insert(None);
-						}
+						self.peers = peers;
                     }
 
-                    common::ClientMsg::Signal { signal: common::Signal::Answer { sdp }, .. } => {
+                    common::ClientMsg::Signal { signal: common::Signal::Answer { sdp }, sender, .. } => {
 						log::debug!("Answer: {:?}", sdp);
+						let pc = self.connections.get(&sender);
+
+						match pc {
+							Some(pc) => {
+								let pc = pc.clone();
+								spawn_local(async move {
+									&pc.set_answer(&sdp).await;
+								})
+							}
+							None => {									
+								log::error!("Unsolicited answer from {}", sender);
+							}
+							
+						}
 					}
 
-                    common::ClientMsg::Signal { signal: common::Signal::Offer { sdp }, sender } => {
+                    common::ClientMsg::Signal { signal: common::Signal::Offer { sdp }, sender, .. } => {
 						log::debug!("Offer: {:?}", sdp);
 
-						//let (id, peer) = self.peers.entry(sender); 
+						let pc = self.connections.entry(sender).or_insert_with(|| Arc::new(WebRtcTask::new().unwrap())).clone();
 
-						//log::debug!("Offer from peer: {:?}", peer);
+						let onicecandidate_callback = self.link.callback(move |candidate| {
+							ServerMsg::Signal { signal: Signal::NewIceCandidate { candidate: candidate }, recipient: sender }
+						});
 
-						//let task = WebRtcTask::new().unwrap();
+						log::debug!("Received offer from {}", sender);
 
-						//log::debug!("{:?}", task);
-						//self.link.send_future(async move {
-						//	let sdp = &task.get_offer().await;
-						//	ServerMsg::Signal { signal: Signal::Offer { sdp: sdp.to_string() } , recipient: id }
-						//});
+						self.link.send_future(async move {
+							pc.set_onicecandidate(onicecandidate_callback);
+							let sdp = &pc.set_offer(&sdp).await;
+							log::debug!("Sending Answer: {:?} {:?}", sdp, sender);
+							ServerMsg::Signal { signal: Signal::Answer { sdp: sdp.to_string() } , recipient: sender }
+						});
+					}
+
+					common::ClientMsg::Signal { signal: common::Signal::NewIceCandidate { candidate }, sender, .. } => {
+						log::debug!("Candidate: {:?}", candidate);
+
+						let pc = self.connections.get(&sender);
+
+						match pc {
+							Some(pc) => {
+								let pc = pc.clone();
+								spawn_local(async move {
+									&pc.add_ice_candidate(&candidate).await;
+								})
+							}
+							None => {									
+								log::error!("Unsolicited ice candidate from {}", sender);
+							}
+							
+						}
                     }
-
                     _ => {
 
                     }
@@ -226,5 +277,18 @@ impl Component for Model {
 pub fn run_app() {
 	std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 	wasm_logger::init(wasm_logger::Config::default());
-    App::<Model>::new().mount_to_body();
+	let window = web_sys::window().unwrap();
+	let navigator = window.navigator();;
+	let mut constraints = web_sys::MediaStreamConstraints::new();
+
+	constraints.audio(&JsValue::from(true));
+	constraints.video(&JsValue::from(true));
+
+	let media_devices = navigator.media_devices().unwrap().get_user_media_with_constraints(&constraints).unwrap();
+	//let media_devices = futures::executor::block_on(media_devices);
+
+
+
+	//App::<Model>::new().mount_to_body();
+	yew::start_app::<Model>();
 }

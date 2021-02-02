@@ -1,16 +1,19 @@
-use js_sys::Reflect;
+use js_sys::{Reflect, Error};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
     MessageEvent, 
     RtcPeerConnection, 
     RtcPeerConnectionIceEvent,
     RtcSdpType,
     RtcSessionDescriptionInit,
+    RtcIceCandidateInit,
     RtcIceCandidate
 };
 use yew::callback::Callback;
+
+use anyhow::{Result, Context};
 
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -80,19 +83,34 @@ impl WebRtcTask {
 
         answer_sdp
     }
+
+    pub async fn set_answer(&self, answer_sdp: &str) { // -> Result<JsValue, Error> {
+        let mut answer = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
+        answer.sdp(&answer_sdp);
+
+        let promise = self.peer_connection.set_remote_description(&answer);
+        // TODO: Fixup all these ignored promises
+        JsFuture::from(promise).await;
+    }
+
+    pub async fn add_ice_candidate(&self, candidate: &str) {
+        let candidate = RtcIceCandidateInit::new(candidate);
+        let promise = self.peer_connection.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate));
+        JsFuture::from(promise).await;
+    }
     
 
     /*
      * Handle ICE candidate each other
      *
      */
-    pub fn set_onicecandidate(&mut self, callback: Callback<RtcIceCandidate>) {
+    pub fn set_onicecandidate(&self, callback: Callback<String>) {
         let onicecandidate_callback =
             Closure::wrap(
                 Box::new(move |ev: RtcPeerConnectionIceEvent| match ev.candidate() {
                     Some(candidate) => {
-                        //console_log!("pc1.onicecandidate: {:#?}", candidate.candidate());
-                        callback.emit(candidate);
+                        log::debug!("pc1.onicecandidate: {:#?}", candidate.candidate());
+                        callback.emit(candidate.candidate());
                     }
                     None => {}
                 }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
