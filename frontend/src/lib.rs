@@ -2,6 +2,7 @@
 
 use anyhow::Error;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 use yew::prelude::*;
 use yew::format::Json;
 use yew::services::websocket::{WebSocketService, WebSocketStatus, WebSocketTask};
@@ -13,7 +14,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use std::sync::{Arc, Mutex};
 type Connections = Arc<Mutex<HashMap<Uuid, WebRtcTask>>>;
 
-use web_sys::{window, Location, Url};
+use web_sys::{window, Location, Url, MediaStream};
 
 use common::{ClientMsg, ServerMsg, Signal};
 
@@ -35,7 +36,8 @@ struct Model {
 	text: String,                    // text in our input box
 	server_data: String,             // data received from the server
 	peers: Vec<Uuid>,
-	connections: HashMap<Uuid, Arc<WebRtcTask>>
+	connections: HashMap<Uuid, Arc<WebRtcTask>>,
+	mediastream: Option<MediaStream>,
 }
 
 #[derive(Debug)]
@@ -48,6 +50,7 @@ enum Action {
 	TextInput(String),               // text was input in the input box
 	SendText,                        // send our text to server
 	Received(Result<ClientMsg, Error>), // data received from server
+	SetMediaStream(MediaStream),
 }
 
 impl From<ServerMsg> for Action {
@@ -79,13 +82,37 @@ impl Component for Model {
     type Properties = ();
 
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
+
+		link.send_future(async {
+			let window = web_sys::window().unwrap();
+			let navigator = window.navigator();;
+			let mut constraints = web_sys::MediaStreamConstraints::new();
+
+			constraints.audio(&JsValue::TRUE);
+			constraints.video(&JsValue::TRUE);
+
+			let promise = JsFuture::from(navigator.media_devices().unwrap().get_user_media_with_constraints(&constraints).unwrap());
+			let mediastream = promise.await.and_then(|val| val.dyn_into::<MediaStream>());
+			match mediastream {
+				Ok(mediastream) => {
+					log::debug!("{:?}", mediastream);
+					Action::SetMediaStream(mediastream)
+				}
+				Err(err) => {
+					log::debug!("{:?}", err);
+					Action::Ignore
+				}
+			}
+		});
+
 		Model {
 			ws: None,
 			link: link,
 			text: String::new(),
 			server_data: String::new(),
 			peers: Vec::new(),
-			connections: HashMap::new()
+			connections: HashMap::new(),
+			mediastream: None
 		}
     }
 
@@ -128,6 +155,10 @@ impl Component for Model {
 			Action::ConnectPeer(id) => {
 
 				let pc = self.connections.entry(id).or_insert_with(|| Arc::new(WebRtcTask::new().unwrap())).clone();
+				
+				if let Some(mediastream) = &self.mediastream {
+					pc.add_tracks(&mediastream);
+				}
 
 				let onicecandidate_callback = self.link.callback(move |candidate| {
 					ServerMsg::Signal { signal: Signal::NewIceCandidate { candidate: candidate }, recipient: id }
@@ -152,8 +183,6 @@ impl Component for Model {
 				log::debug!("Sending Signal: {:?}", signal);
 				match self.ws {
 					Some(ref mut task) => {
-						//let signal : common::ServerMsg = common::ServerMsg::ListPeers;
-						//let json : String = serde_json::to_string(&signal).unwrap();
 						task.send(Json(&signal));
 						self.text = "".to_string();
 						true // clear input box
@@ -167,7 +196,6 @@ impl Component for Model {
 				match self.ws {
 					Some(ref mut task) => {
 						let signal : common::ServerMsg = common::ServerMsg::ListPeers;
-						//let json : String = serde_json::to_string(&signal).unwrap();
 						task.send(Json(&signal));
 						self.text = "".to_string();
 						true // clear input box
@@ -251,6 +279,10 @@ impl Component for Model {
 				self.server_data.push_str(&format!("Error when reading data from server: {}\n", &s.to_string()));
 				true
 			}
+			Action::SetMediaStream(mediastream) => {
+				self.mediastream = Some(mediastream);
+				false
+			}
 		}
 	}
 
@@ -277,18 +309,7 @@ impl Component for Model {
 pub fn run_app() {
 	std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 	wasm_logger::init(wasm_logger::Config::default());
-	let window = web_sys::window().unwrap();
-	let navigator = window.navigator();;
-	let mut constraints = web_sys::MediaStreamConstraints::new();
-
-	constraints.audio(&JsValue::from(true));
-	constraints.video(&JsValue::from(true));
-
-	let media_devices = navigator.media_devices().unwrap().get_user_media_with_constraints(&constraints).unwrap();
-	//let media_devices = futures::executor::block_on(media_devices);
-
-
-
+	
 	//App::<Model>::new().mount_to_body();
 	yew::start_app::<Model>();
 }

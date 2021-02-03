@@ -33,6 +33,7 @@ features = [
     "MessageEvent",
     "RtcPeerConnectionIceEvent",
     "RtcSdpType",
+    "RtcRtpSender",
     "RtcSessionDescriptionInit",
     "RtcIceCandidateInit",
     "RtcIceCandidate",
@@ -40,4 +41,6 @@ features = [
     "Navigator",
     "MediaDevices",
     "MediaStreamConstraints",
+    "MediaStream",
+    "MediaStreamTrack",
 ]

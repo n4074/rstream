@@ -9,7 +9,9 @@ use web_sys::{
     RtcSdpType,
     RtcSessionDescriptionInit,
     RtcIceCandidateInit,
-    RtcIceCandidate
+    RtcIceCandidate,
+    MediaStream,
+    MediaStreamTrack
 };
 use yew::callback::Callback;
 
@@ -41,6 +43,18 @@ impl WebRtcTask {
         Ok(WebRtcTask {
             peer_connection: pc
         })
+    }
+
+    pub fn add_tracks(&self, mediastream: &MediaStream) {
+
+        log::error!("Got here: {:?}", mediastream);
+        for track in mediastream.get_tracks().iter() {
+            if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
+                log::error!("Adding track: {:?}", track);
+                self.peer_connection.add_track_0(&track, mediastream);
+            }
+        }
+
     }
 
     pub async fn get_offer(&self) -> String {
