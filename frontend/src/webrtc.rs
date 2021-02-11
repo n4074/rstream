@@ -11,7 +11,9 @@ use web_sys::{
     RtcIceCandidateInit,
     RtcIceCandidate,
     MediaStream,
-    MediaStreamTrack
+    MediaStreamTrack,
+    RtcTrackEvent,
+    RtcConfiguration,
 };
 use yew::callback::Callback;
 
@@ -38,20 +40,24 @@ pub struct WebRtcTask {
 
 impl WebRtcTask {
     pub fn new() -> Result<WebRtcTask, WebRtcError> {
-        //Err(WebRtcError::CreationError("unimplemented".to_owned()));
-        let pc = RtcPeerConnection::new().unwrap();
+        let pc = RtcPeerConnection::new_with_configuration(&RtcConfiguration::new()).unwrap();
         Ok(WebRtcTask {
             peer_connection: pc
         })
     }
 
+    pub fn log_pc(&self) {
+        web_sys::console::log_1(self.peer_connection.as_ref());
+    }
+
     pub fn add_tracks(&self, mediastream: &MediaStream) {
 
-        log::error!("Got here: {:?}", mediastream);
         for track in mediastream.get_tracks().iter() {
+            web_sys::console::log_1(mediastream.as_ref());
+            web_sys::console::log_1(track.as_ref());
             if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
-                log::error!("Adding track: {:?}", track);
-                self.peer_connection.add_track_0(&track, mediastream);
+                web_sys::console::error_2(&"add_track:".into(), track.as_ref());
+                let sender = self.peer_connection.add_track_0(&track, mediastream);
             }
         }
 
@@ -71,18 +77,29 @@ impl WebRtcTask {
 
         let promise = self.peer_connection.set_local_description(&offer_obj);
 
-        JsFuture::from(promise).await;
-
+        let res = JsFuture::from(promise).await;
+        if let Ok(_) = res {
+            log::info!("Success setting local description");
+        } else {
+            log::error!("Error setting local description: {:?}", res);
+        }
         offer_sdp
     }
 
-    pub async fn set_offer(&self, offer_sdp: &str) -> String {
+    pub async fn set_remote_description(&self, offer_sdp: &str) {
         let mut offer = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
 
         offer.sdp(&offer_sdp);
         let promise = self.peer_connection.set_remote_description(&offer);
-        JsFuture::from(promise).await;
+        let res = JsFuture::from(promise).await;
+        if let Ok(_) = res {
+            log::info!("Success setting remote description");
+        } else {
+            log::error!("Error setting remote description: {:?}", res);
+        }
+    }
 
+    pub async fn create_answer(&self) -> String {
         let answer = JsFuture::from(self.peer_connection.create_answer()).await.unwrap();
         let answer_sdp = Reflect::get(&answer, &JsValue::from_str("sdp"))
             .unwrap()
@@ -93,24 +110,48 @@ impl WebRtcTask {
         answer_obj.sdp(&answer_sdp);
         let promise = self.peer_connection.set_local_description(&answer_obj);
 
-        JsFuture::from(promise).await;
-
+        let res = JsFuture::from(promise).await;
+        if let Ok(_) = res {
+            log::info!("Success creating answer");
+        } else {
+            log::error!("Error creating answer: {:?}", res);
+        }
         answer_sdp
+                        
+
     }
 
     pub async fn set_answer(&self, answer_sdp: &str) { // -> Result<JsValue, Error> {
-        let mut answer = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
+        let mut answer = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         answer.sdp(&answer_sdp);
 
         let promise = self.peer_connection.set_remote_description(&answer);
         // TODO: Fixup all these ignored promises
-        JsFuture::from(promise).await;
+        let res = JsFuture::from(promise).await;
+
+        if let Ok(_) = res {
+            log::info!("Success setting remote description");
+        } else {
+            log::error!("Error setting remote description: {:?}", res);
+        }
     }
 
-    pub async fn add_ice_candidate(&self, candidate: &str) {
-        let candidate = RtcIceCandidateInit::new(candidate);
-        let promise = self.peer_connection.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate));
-        JsFuture::from(promise).await;
+    pub async fn add_ice_candidate(&self, candidate: common::IceCandidate) {
+        let mut candidate_init = RtcIceCandidateInit::new(&candidate.candidate);
+        candidate_init.sdp_m_line_index(candidate.sdp_m_line_index);
+        candidate_init.sdp_mid(candidate.sdp_mid.as_deref());
+
+        //let candidate_init = js_sys::JSON::parse(&candidate.blob).unwrap();
+        
+        let candidate = RtcIceCandidate::new(&candidate_init).unwrap();
+        log::info!("remote_candidate: {:?}", candidate.candidate());
+        let promise = self.peer_connection.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate_init));
+        let res = JsFuture::from(promise).await;
+        if let Ok(_) = res {
+            log::info!("Success setting remote candidate");
+        } else {
+            log::error!("Error setting remote candidate: {:?}", res);
+        }
     }
     
 
@@ -118,21 +159,40 @@ impl WebRtcTask {
      * Handle ICE candidate each other
      *
      */
-    pub fn set_onicecandidate(&self, callback: Callback<String>) {
+    pub fn set_onicecandidate(&self, callback: Callback<common::IceCandidate>) {
         let onicecandidate_callback =
             Closure::wrap(
-                Box::new(move |ev: RtcPeerConnectionIceEvent| match ev.candidate() {
-                    Some(candidate) => {
-                        log::debug!("pc1.onicecandidate: {:#?}", candidate.candidate());
-                        callback.emit(candidate.candidate());
+                Box::new(move |ev: RtcPeerConnectionIceEvent| 
+                    if let Some(candidate) = ev.candidate() {
+                        log::info!("local_candidate: {:?}", candidate.candidate());
+
+                        callback.emit(common::IceCandidate { candidate: candidate.candidate(), sdp_mid: candidate.sdp_mid(), sdp_m_line_index: candidate.sdp_m_line_index() });
+                        //callback.emit(common::IceCandidate { blob: js_sys::JSON::stringify(candidate.as_ref()).unwrap().as_string().unwrap() });
                     }
-                    None => {}
-                }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
+                ) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>,
             );
+
 
         self.peer_connection.set_onicecandidate(Some(onicecandidate_callback.as_ref().unchecked_ref()));
         onicecandidate_callback.forget();
     }
 
+    pub fn set_ontrack(&self, callback: Callback<MediaStream>) {
+        let ontrack_callback =
+            Closure::wrap(
+                Box::new(move |ev: RtcTrackEvent| {
+                    web_sys::console::log_1(ev.streams().as_ref());
+                    let stream = ev.streams().get(0); 
+                    if let Ok(stream) = stream.dyn_into() {
+                        log::info!("ontrack: {:?}", stream);
+
+                        callback.emit(stream)
+                    }
+                }) as Box<dyn FnMut(RtcTrackEvent)>,
+            );
+
+        self.peer_connection.set_ontrack(Some(ontrack_callback.as_ref().unchecked_ref()));
+        ontrack_callback.forget();
+    }
         //Ok(())
 } 

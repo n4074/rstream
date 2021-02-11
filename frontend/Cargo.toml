@@ -12,7 +12,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 yew = "0.17"
 yewtil = { version = "*", features = ["future"]}
-wasm-bindgen = "0.2.67"
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+
 wasm-logger = "0.2"
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_error" ] }
 console_error_panic_hook = "*"
@@ -30,6 +31,7 @@ common = { path = "../common" }
 version = "*"
 features = [ 
     "RtcPeerConnection",
+    "RtcConfiguration",
     "MessageEvent",
     "RtcPeerConnectionIceEvent",
     "RtcSdpType",
@@ -37,10 +39,12 @@ features = [
     "RtcSessionDescriptionInit",
     "RtcIceCandidateInit",
     "RtcIceCandidate",
+    "RtcTrackEvent",
     "Window",
     "Navigator",
     "MediaDevices",
     "MediaStreamConstraints",
     "MediaStream",
     "MediaStreamTrack",
+    "HtmlVideoElement",
 ]

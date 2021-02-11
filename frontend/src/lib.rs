@@ -1,10 +1,12 @@
 #![recursion_limit="1024"]
+#![warn(clippy::all)]
 
 use anyhow::Error;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use yew::prelude::*;
 use yew::format::Json;
+use yew::html::NodeRef;
 use yew::services::websocket::{WebSocketService, WebSocketStatus, WebSocketTask};
 use yewtil::future::LinkFuture;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -14,7 +16,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use std::sync::{Arc, Mutex};
 type Connections = Arc<Mutex<HashMap<Uuid, WebRtcTask>>>;
 
-use web_sys::{window, Location, Url, MediaStream};
+use web_sys::{window, Location, Url, MediaStream,HtmlVideoElement};
 
 use common::{ClientMsg, ServerMsg, Signal};
 
@@ -33,11 +35,12 @@ mod peer;
 struct Model {
 	ws: Option<WebSocketTask>,
 	link: ComponentLink<Model>,
-	text: String,                    // text in our input box
-	server_data: String,             // data received from the server
 	peers: Vec<Uuid>,
 	connections: HashMap<Uuid, Arc<WebRtcTask>>,
 	mediastream: Option<MediaStream>,
+	//in_streams: Vec<(NodeRef, MediaStream)>,
+	self_video: NodeRef,
+	other_video: NodeRef,
 }
 
 #[derive(Debug)]
@@ -47,10 +50,9 @@ enum Action {
 	Ignore,                          // ignore this message
 	Signal(ServerMsg),
 	ConnectPeer(Uuid), // fix this to uuid
-	TextInput(String),               // text was input in the input box
-	SendText,                        // send our text to server
 	Received(Result<ClientMsg, Error>), // data received from server
 	SetMediaStream(MediaStream),
+	MediaStreamAdded(Uuid, MediaStream),
 }
 
 impl From<ServerMsg> for Action {
@@ -71,10 +73,75 @@ impl Model {
 		self.peers.iter().map(|id|  {
 			let id = id.clone();
 			html!{
-				<p><button onclick=self.link.callback(move |_| Action::ConnectPeer(id))>{ id.to_string() }</button></p>
+				<button onclick=self.link.callback(move |_| Action::ConnectPeer(id))>{ id.to_string() }</button>
 			}
 		}).collect::<Html>()
 	}
+
+	fn video_view(&self) -> Html {
+		html!{
+			<>
+			<video id="localvideo" autoplay=true ref=self.self_video.clone() />
+			<video id="remotevideo" autoplay=true ref=self.other_video.clone() />
+			</>
+		}
+	}
+
+	fn new_peer(&mut self, id: Uuid) -> Arc<WebRtcTask> {
+		let pc = self.connections.entry(id).or_insert_with(|| 
+			Arc::new(WebRtcTask::new().unwrap())
+		).clone();
+
+		if let Some(mediastream) = &self.mediastream {
+			pc.add_tracks(&mediastream);
+		}
+
+		let onicecandidate_callback = self.link.callback(move |candidate| {
+			ServerMsg::Signal { signal: Signal::NewIceCandidate { candidate: candidate }, recipient: id }
+		});
+
+		let ontrack_callback = self.link.callback(move |stream| {
+			Action::MediaStreamAdded(id, stream)
+		});
+
+		pc.set_ontrack(ontrack_callback);
+		pc.set_onicecandidate(onicecandidate_callback);
+		pc
+	}
+
+	fn accept_connection(&mut self, sdp: String, id: Uuid) {
+		let pc = self.new_peer(id);
+
+		self.link.send_future(async move {
+			&pc.set_remote_description(&sdp).await;
+			let sdp = &pc.create_answer().await;
+
+			ServerMsg::Signal { signal: Signal::Answer { sdp: sdp.to_string() } , recipient: id }
+		});
+	}
+
+	fn request_connection(&mut self, id: Uuid) {
+		let pc = self.new_peer(id);
+
+		self.link.send_future(async move {
+			//pc.set_onicecandidate(onicecandidate_callback);
+			let sdp = &pc.get_offer().await;
+			ServerMsg::Signal { signal: Signal::Offer { sdp: sdp.to_string() } , recipient: id }
+		});
+	}
+
+}
+
+async fn get_user_media() -> Result<MediaStream, JsValue> {
+	let window = web_sys::window().unwrap();
+	let navigator = window.navigator();;
+	let mut constraints = web_sys::MediaStreamConstraints::new();
+
+	constraints.audio(&JsValue::TRUE);
+	constraints.video(&JsValue::TRUE);
+
+	let promise = JsFuture::from(navigator.media_devices().unwrap().get_user_media_with_constraints(&constraints).unwrap());
+	promise.await.and_then(|val| val.dyn_into::<MediaStream>())
 }
 
 impl Component for Model {
@@ -84,15 +151,7 @@ impl Component for Model {
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
 
 		link.send_future(async {
-			let window = web_sys::window().unwrap();
-			let navigator = window.navigator();;
-			let mut constraints = web_sys::MediaStreamConstraints::new();
-
-			constraints.audio(&JsValue::TRUE);
-			constraints.video(&JsValue::TRUE);
-
-			let promise = JsFuture::from(navigator.media_devices().unwrap().get_user_media_with_constraints(&constraints).unwrap());
-			let mediastream = promise.await.and_then(|val| val.dyn_into::<MediaStream>());
+			let mediastream = get_user_media().await;
 			match mediastream {
 				Ok(mediastream) => {
 					log::debug!("{:?}", mediastream);
@@ -108,20 +167,19 @@ impl Component for Model {
 		Model {
 			ws: None,
 			link: link,
-			text: String::new(),
-			server_data: String::new(),
 			peers: Vec::new(),
 			connections: HashMap::new(),
-			mediastream: None
+			mediastream: None,
+			self_video: NodeRef::default(),
+			other_video: NodeRef::default(),
 		}
     }
 
     fn change(&mut self, _: Self::Properties) -> ShouldRender {
         false
-    }
+	}
 
 	fn update(&mut self, msg: Self::Message) -> ShouldRender {
-		log::debug!("Processing Msg: {:?}", msg);
 		match msg {
 			Action::Connect => {
 				log::debug!("Connecting");
@@ -153,105 +211,37 @@ impl Component for Model {
 			}
 
 			Action::ConnectPeer(id) => {
-
-				let pc = self.connections.entry(id).or_insert_with(|| Arc::new(WebRtcTask::new().unwrap())).clone();
-				
-				if let Some(mediastream) = &self.mediastream {
-					pc.add_tracks(&mediastream);
-				}
-
-				let onicecandidate_callback = self.link.callback(move |candidate| {
-					ServerMsg::Signal { signal: Signal::NewIceCandidate { candidate: candidate }, recipient: id }
-				});
-
-
-				self.link.send_future(async move {
-					pc.set_onicecandidate(onicecandidate_callback);
-					let sdp = &pc.get_offer().await;
-					log::debug!("Sending Signal::Offer: {:?}", sdp);
-					ServerMsg::Signal { signal: Signal::Offer { sdp: sdp.to_string() } , recipient: id }
-				});
-
+				self.request_connection(id);
 				false
 			}
 
-			Action::TextInput(e) => {
-				self.text = e; // note input box value
-				true
-			}
 			Action::Signal(signal) => {
-				log::debug!("Sending Signal: {:?}", signal);
-				match self.ws {
-					Some(ref mut task) => {
-						task.send(Json(&signal));
-						self.text = "".to_string();
-						true // clear input box
-					}
-					None => {
-						false
-					}
+				if let Some(ref mut task) = self.ws {
+					task.send(Json(&signal));
 				}
-			}
-			Action::SendText => {
-				match self.ws {
-					Some(ref mut task) => {
-						let signal : common::ServerMsg = common::ServerMsg::ListPeers;
-						task.send(Json(&signal));
-						self.text = "".to_string();
-						true // clear input box
-					}
-					None => {
-						false
-					}
-				}
+				false
 			}
 			Action::Received(Ok(s)) => {
-                self.server_data.push_str(&format!("{:?}\n", &s.clone()));
                 match s {
                     common::ClientMsg::ListPeers { peers }  => {
-						log::debug!("Peers: {:?}", peers);
 						self.peers = peers;
                     }
 
                     common::ClientMsg::Signal { signal: common::Signal::Answer { sdp }, sender, .. } => {
-						log::debug!("Answer: {:?}", sdp);
-						let pc = self.connections.get(&sender);
-
-						match pc {
-							Some(pc) => {
-								let pc = pc.clone();
-								spawn_local(async move {
-									&pc.set_answer(&sdp).await;
-								})
-							}
-							None => {									
-								log::error!("Unsolicited answer from {}", sender);
-							}
-							
+						if let Some(pc) = self.connections.get(&sender).map(|pc| pc.clone()) {
+							spawn_local(async move {
+								&pc.set_answer(&sdp).await;
+							})
 						}
 					}
 
                     common::ClientMsg::Signal { signal: common::Signal::Offer { sdp }, sender, .. } => {
 						log::debug!("Offer: {:?}", sdp);
-
-						let pc = self.connections.entry(sender).or_insert_with(|| Arc::new(WebRtcTask::new().unwrap())).clone();
-
-						let onicecandidate_callback = self.link.callback(move |candidate| {
-							ServerMsg::Signal { signal: Signal::NewIceCandidate { candidate: candidate }, recipient: sender }
-						});
-
-						log::debug!("Received offer from {}", sender);
-
-						self.link.send_future(async move {
-							pc.set_onicecandidate(onicecandidate_callback);
-							let sdp = &pc.set_offer(&sdp).await;
-							log::debug!("Sending Answer: {:?} {:?}", sdp, sender);
-							ServerMsg::Signal { signal: Signal::Answer { sdp: sdp.to_string() } , recipient: sender }
-						});
+						self.accept_connection(sdp, sender);
 					}
 
 					common::ClientMsg::Signal { signal: common::Signal::NewIceCandidate { candidate }, sender, .. } => {
-						log::debug!("Candidate: {:?}", candidate);
+						//log::debug!("Candidate: {:?}", candidate);
 
 						let pc = self.connections.get(&sender);
 
@@ -259,7 +249,7 @@ impl Component for Model {
 							Some(pc) => {
 								let pc = pc.clone();
 								spawn_local(async move {
-									&pc.add_ice_candidate(&candidate).await;
+									&pc.add_ice_candidate(candidate).await;
 								})
 							}
 							None => {									
@@ -274,13 +264,34 @@ impl Component for Model {
                 }
 				true
 			}
+			Action::MediaStreamAdded(id, stream) => {
+				log::error!("Received new media stream: {:?}", stream);
+
+				if let Some(video) = self.other_video.cast::<HtmlVideoElement>() {
+					log::error!("Setting remote video stream {:?} on video {:?}", stream, video);
+					web_sys::console::log_2(&"Here".into(), video.as_ref());
+					web_sys::console::log_1(stream.as_ref());
+					video.set_src_object(Some(&stream));
+					web_sys::console::log_1(video.as_ref());
+				}
+
+				//self.in_streams.push((NodeRef::default(), stream));
+
+				false
+			}
 			Action::Received(Err(s)) => {
-				log::debug!("Error here: {:?}", s);
-				self.server_data.push_str(&format!("Error when reading data from server: {}\n", &s.to_string()));
+				log::error!("error:{:?}", s);
 				true
 			}
 			Action::SetMediaStream(mediastream) => {
+
+				if let Some(video) = self.self_video.cast::<HtmlVideoElement>() {
+					video.set_src_object(Some(&mediastream));
+				}
+
+				web_sys::console::log_1(mediastream.as_ref());
 				self.mediastream = Some(mediastream);
+
 				false
 			}
 		}
@@ -290,16 +301,12 @@ impl Component for Model {
 		html! {
             <>
 			// connect button
-			<p><button onclick=self.link.callback(|_| Action::Connect)>{ "Connect" }</button></p><br/>
+			<button onclick=self.link.callback(|_| Action::Connect)>{ "Connect" }</button>
+			<button onclick=self.link.callback(|_| Action::Signal(ServerMsg::ListPeers))>{ "Get Peers" }</button>
+			{ self.peer_view() }
 			// text showing whether we're connected or not
 			<p>{ "Connected: " } { !self.ws.is_none() } </p><br/>
-			// input box for sending text
-			<p><input type="text", value=&self.text, oninput=self.link.callback(|e : yew::events::InputData | Action::TextInput(e.value))/></p><br/>
-			<p>{ self.peer_view() }</p>
-			// button for sending text
-			<p><button onclick=self.link.callback(|_| Action::Signal(ServerMsg::ListPeers))>{ "Get Peers" }</button></p><br/>
-			// text area for showing data from the server
-            <p><textarea value=&self.server_data,></textarea></p><br/>
+			<p>{ self.video_view() }</p>
             </>
 		}
 	}
@@ -310,6 +317,5 @@ pub fn run_app() {
 	std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 	wasm_logger::init(wasm_logger::Config::default());
 	
-	//App::<Model>::new().mount_to_body();
 	yew::start_app::<Model>();
 }

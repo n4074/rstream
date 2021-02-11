@@ -70,7 +70,7 @@ async fn main() {
         .arg("-p, --port=[port]      'Host port to listen on'")
         .get_matches();
 
-    let addr: std::net::Ipv4Addr = matches.value_of("address")
+    let addr: std::net::Ipv4Addr = matches.value_of("host")
         .unwrap_or("127.0.0.1").parse().unwrap();
 
     let port: u16 = matches.value_of_t("port").unwrap_or(8080);
@@ -90,6 +90,7 @@ async fn main() {
         .or(warp::fs::dir("./src/static")) // TODO: embed resources in binary
     );
 
+    log::debug!("{:?}", addr);
     warp::serve(routes)
         .tls()
         .key_path("./localhost.key")
@@ -111,10 +112,23 @@ async fn client_handler(socket: warp::ws::WebSocket, peers: PeerMap) {
         tokio::select! {
             Some(msg) = client_rx.next() => {
                 log::debug!("ClientMsg: {:?}", msg);
-                let msg = msg.unwrap();
-                if msg.is_text() {
-                    handle_client(id, msg.to_str().unwrap(), &mut client_tx, &peers).await;
-                };
+                match msg {
+                    Ok(msg) => {
+                        if msg.is_text() {
+                            handle_client(id, msg.to_str().unwrap(), &mut client_tx, &peers).await.unwrap();
+                        } else if msg.is_close() {
+                            peers.lock().unwrap().remove(&id);
+                            return;
+                        };
+
+                    }
+                    Err(err) => {
+                        log::error!("{:?}", err);
+                        peers.lock().unwrap().remove(&id);
+                        return;
+                    }
+
+                }
             }
             Some(PeerMsg { signal, sender, .. }) = peer_rx.recv() => {
                 log::debug!("PeerMsg: {:?} {:?}", signal, sender);

@@ -6,10 +6,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+pub struct IceCandidate {
+    pub candidate: String,
+    pub sdp_mid: Option<String>,
+    pub sdp_m_line_index: Option<u16>,
+    //pub blob: String
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Signal {
     Offer { sdp: String },    
     Answer { sdp: String },    
-    NewIceCandidate { candidate: String }
+    NewIceCandidate { candidate: IceCandidate }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
