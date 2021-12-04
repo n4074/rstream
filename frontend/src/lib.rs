@@ -38,6 +38,7 @@ struct Model {
 	peers: Vec<Uuid>,
 	connections: HashMap<Uuid, Arc<WebRtcTask>>,
 	mediastream: Option<MediaStream>,
+	//mediastream2: Arc<MediaStream>,
 	//in_streams: Vec<(NodeRef, MediaStream)>,
 	self_video: NodeRef,
 	other_video: NodeRef,
@@ -124,7 +125,6 @@ impl Model {
 		let pc = self.new_peer(id);
 
 		self.link.send_future(async move {
-			//pc.set_onicecandidate(onicecandidate_callback);
 			let sdp = &pc.get_offer().await;
 			ServerMsg::Signal { signal: Signal::Offer { sdp: sdp.to_string() } , recipient: id }
 		});
@@ -241,21 +241,10 @@ impl Component for Model {
 					}
 
 					common::ClientMsg::Signal { signal: common::Signal::NewIceCandidate { candidate }, sender, .. } => {
-						//log::debug!("Candidate: {:?}", candidate);
-
-						let pc = self.connections.get(&sender);
-
-						match pc {
-							Some(pc) => {
-								let pc = pc.clone();
-								spawn_local(async move {
-									&pc.add_ice_candidate(candidate).await;
-								})
-							}
-							None => {									
-								log::error!("Unsolicited ice candidate from {}", sender);
-							}
-							
+						if let Some(pc) = self.connections.get(&sender).map(|pc| pc.clone()) {
+							spawn_local(async move {
+								&pc.add_ice_candidate(candidate).await;
+							})
 						}
                     }
                     _ => {
@@ -265,18 +254,9 @@ impl Component for Model {
 				true
 			}
 			Action::MediaStreamAdded(id, stream) => {
-				log::error!("Received new media stream: {:?}", stream);
-
 				if let Some(video) = self.other_video.cast::<HtmlVideoElement>() {
-					log::error!("Setting remote video stream {:?} on video {:?}", stream, video);
-					web_sys::console::log_2(&"Here".into(), video.as_ref());
-					web_sys::console::log_1(stream.as_ref());
 					video.set_src_object(Some(&stream));
-					web_sys::console::log_1(video.as_ref());
 				}
-
-				//self.in_streams.push((NodeRef::default(), stream));
-
 				false
 			}
 			Action::Received(Err(s)) => {
